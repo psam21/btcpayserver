@@ -58,24 +58,105 @@ function updateLanguage(lang) {
 
 function asNumber(val) {
     if (!val) return null;
-    let str = val.toString();
+    let str = val.toString().trim();
     
-    // Remove leading non-numeric characters (e.g. currency symbols like $, €, £)
+    // Step 1: Remove leading non-numeric characters (currency symbols: $, €, £, ¥, ₹, etc.)
+    // This handles formats like: "$1,234.56" → "1,234.56"
     str = str.replace(/^[^\d-]+/, '');
     
-    // Detect decimal separator: the last occurrence of . or , is the decimal separator
-    // Everything before it is thousands separators
-    const lastComma = str.lastIndexOf(',');
-    const lastDot = str.lastIndexOf('.');
+    // Step 2: Remove trailing non-numeric characters (currency codes: JPY, USD, EUR, GBP, etc.)
+    // This handles formats like: "123,456 JPY" → "123,456"
+    str = str.replace(/[^\d.,\-\s].*$/, '').trim();
     
-    if (lastComma > lastDot) {
-        // European format: 91.121,60 - comma is decimal, dots/spaces are thousands
-        str = str.replace(/[\s.]/g, '').replace(',', '.');
-    } else {
-        // US/UK format: 91,121.60 - dot is decimal, commas/spaces are thousands
-        str = str.replace(/[\s,]/g, '');
+    // Step 3: Handle simple case - no separators at all (just spaces as thousands)
+    // Examples: "1000000", "1 000 000", "-500"
+    if (!/[,.]/.test(str)) {
+        return parseFloat(str.replace(/\s/g, ''));
     }
     
+    // Step 4: Analyze the separators to determine decimal vs thousands separator
+    const lastComma = str.lastIndexOf(',');
+    const lastDot = str.lastIndexOf('.');
+    const lastSeparator = Math.max(lastComma, lastDot);
+    
+    // Count total occurrences and digits after last separator
+    const commaCount = (str.match(/,/g) || []).length;
+    const dotCount = (str.match(/\./g) || []).length;
+    const digitsAfterLast = (str.substring(lastSeparator + 1).match(/\d/g) || []).length;
+    
+    // CASE 1: Both comma and dot exist
+    // The rightmost separator is the decimal separator (standard in most formats)
+    // Examples: "1.234,56" (European) or "1,234.56" (US)
+    if (commaCount > 0 && dotCount > 0) {
+        if (lastComma > lastDot) {
+            // European format: comma is decimal, dots are thousands separators
+            // "1.234.567,89" → remove dots and spaces, convert comma to dot
+            str = str.replace(/[\s.]/g, '').replace(',', '.');
+        } else {
+            // US/UK format: dot is decimal, commas are thousands separators
+            // "1,234,567.89" → remove commas and spaces, keep dot
+            str = str.replace(/[\s,]/g, '');
+        }
+    }
+    // CASE 2: Only comma(s) exist, no dots
+    // Need to determine if the single comma is a decimal or thousands separator
+    else if (commaCount === 1 && dotCount === 0) {
+        if (digitsAfterLast === 2) {
+            // 2 digits after comma = decimal separator (standard for cents/fractional)
+            // Examples: "99,99" (European), "1234,56" (European)
+            str = str.replace(/[\s]/g, '').replace(',', '.');
+        } else if (digitsAfterLast === 1) {
+            // 1 digit after comma = ambiguous edge case
+            // Could be decimal "1,5" (1.5) or thousands "123,456789" (unlikely)
+            // In practice, currency forms always format decimals with 2 digits (0.50, 0,50)
+            // So a single digit is more likely thousands separator (incomplete parsing)
+            // For safety and common usage, treat as thousands
+            str = str.replace(/[\s,]/g, '');
+        } else if (digitsAfterLast === 3) {
+            // 3 digits after comma = ambiguous - could be:
+            //   - Thousands separator: "123,456" (JPY, or intermediate thousands in unformatted)
+            //   - Decimal with rounding: "1,234" (unlikely but possible)
+            // Heuristic: Count digits BEFORE the comma to decide
+            const beforeComma = str.substring(0, lastComma).replace(/[^\d]/g, '').length;
+            if (beforeComma >= 4) {
+                // 4+ digits before = definitely thousands separator
+                // Examples: "1234,567" or larger numbers with intermediate thousands
+                str = str.replace(/[\s,]/g, '');
+            } else {
+                // Fewer digits before = default to thousands (most common in currency)
+                // Examples: "123,456" (JPY) or "1,234" (can't be decimal, would be 1.234 not 1234)
+                str = str.replace(/[\s,]/g, '');
+            }
+        } else {
+            // 0 or 4+ digits after comma
+            // 0 digits: "123," - malformed, remove separator
+            // 4+ digits: "1,23456" - very unlikely, treat as thousands
+            str = str.replace(/[\s,]/g, '');
+        }
+    }
+    // CASE 3: Only dot(s) exist, no commas
+    // Need to determine if the single dot is a decimal or thousands separator
+    else if (dotCount === 1 && commaCount === 0) {
+        if (digitsAfterLast <= 3) {
+            // 1-3 digits after dot = decimal separator (standard)
+            // Examples: "99.99" (US), "99.9" (US with single decimal), "99.999" (rare)
+            str = str.replace(/[\s,]/g, '');
+        } else {
+            // 4+ digits after dot = separator without decimal (unlikely scenario)
+            // Remove all separators and treat as plain number
+            // Examples: "12.34567" (which would be treated as 1234567)
+            str = str.replace(/[\s,.]/g, '');
+        }
+    }
+    // CASE 4: Multiple separators (multiple dots or multiple commas)
+    // This is complex formatting - remove all separators to be safe
+    else {
+        // Multiple separators indicate thousands formatting throughout
+        // Examples: "1.234.567.89" or "1,234,567,89" (edge case, treat as thousands)
+        str = str.replace(/[\s,.]/g, '');
+    }
+    
+    // Step 5: Parse the cleaned string as a number
     const num = parseFloat(str);
     return isNaN(num) ? null : num;
 }
